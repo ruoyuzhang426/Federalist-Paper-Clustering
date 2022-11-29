@@ -1,0 +1,710 @@
+---
+title: "The Federalist Papers: Clustering Analysis"
+author: "Brady Smith, Joe Zhang, and Ruoyu Zhang"
+header-includes:
+- \usepackage{amsgen,amsmath,amstext,amsbsy,amsopn,amssymb,mathabx,amsthm,bm,bbm}
+- \usepackage[labelsep=space]{caption}
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+subtitle: $\textbf{Machine Learning, Fall 2021}$
+---
+
+# Abstract
+
+In effort to determine the likely author of the disputed federalist papers, we analyzed the text patterns in the Federalist Papers using principal component analysis, k-means clustering, and hierarchical clustering. Though results we got through PCA and hierarchical clustering are inconclusive, K-means clustering provided a promising clustering result. In our K-means algorithm, all of James Madison’s papers and the vast majority of the disputed papers are grouped into the the same cluster. Therefore, we conclude that most likely author of the disputed federalist papers is James Madison.
+
+# Introduction
+
+The Federalist Papers is a collection of 85 articles and essays written by Alexander Hamilton, James Madison, and John Jay under the collective pseudonym "Publius" to promote the ratification of the United States Constitution. While the authorship of 73 of The Federalist essays is fairly certain, the identities of those who wrote the twelve remaining essays are disputed by some scholars. In an attempt to undercover the author of the disputed papers, we used the Federalist Paper dataset, which contains the frequency of 70 different function words (common words used without much deliberation) and authorship for the 85 Federalist papers written in 1787. To determine the author of the disputed papers, we applied Principle Component Analysis (PCA) and unsupervised machine learning techniques such as k-mean clustering and hierarchical clustering to the Federalist Paper dataset. 
+
+# Data Cleaning and Preperation
+```{r, eval=T, echo=F, warning=F, include=F}
+set.seed(315)
+library(kableExtra)
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(microbenchmark)
+library(matrixStats)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(broom)
+library(purrr)
+library(factoextra)
+```
+
+The Federalist Papers data set is made up of all 85 of the Federalist papers, which contains 72 variables and 85 observations. The first few rows and columns of the dataset have been presented below. The variable `Paper` is a discrete numerical variable numbering each paper. `Author` is a categorical variable representing the authorship of the corresponding paper. The three authors are Alexander Hamilton (AH), John Jay (JJ), and James Madison (JM). There are some collaborative papers (COL) and some papers with disputed authors (DIS). The remaining 70 variables are numerical variables that are the proportion of that function word out of all words in that paper. This is a continuous variable than can take values on [0, 1].
+
+```{r, eval=T, echo=F}
+federalist=read.delim("Federalist.txt",header = TRUE, sep = ",", dec = ".")
+#federalist[1:5,1:6]
+
+print_fed=federalist[1:5,1:6]%>%
+  kbl(caption = "Overview of Original Data") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+print_fed
+```
+
+We did not subset the data because the dataset is not humongous and each observation is useful and informative. The data is easy to understand and not too large, so there is no reason to make changes to the data.
+
+To make it easier for our future analysis, we multiply each of the numerical variables by 100 to convert to percentage because they are very small numbers and this eases interpretation. Furthermore, we centered and standardized the data to make sure all the features will have a mean of zero, a standard deviation of one, and thus, the same scale. Centering is very helpful with PCA and standardization helps the calculation of distances when the range of the variables might not be similar. Here's a look of the first few rows and columns of the cleaned dataset: 
+
+```{r, eval=T, echo=F}
+federalist[,3:72]=federalist[,3:72]*100
+
+federalist[,3:72]= as.data.frame(scale(federalist[,3:72]))
+federalist.centered=data.frame(federalist)
+#federalist.centered[1:5,1:6]
+
+print_fedcenter=federalist.centered[1:5,1:6]%>%
+  kbl(caption = "Overview of Centered and Standardized Data") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+print_fedcenter
+
+```
+
+
+# Exploratory Data Analysis
+
+The most important variable in the Federalist Paper dataset is the count of all the authors. As summarized by the following table, of the 85 papers, there are 51 papers authored by Alexander Hamilton, 14 papers authored by James Madison, 3 papers authored by John Jay, 3 papers coauthored, and 12 papers having disputed authorship.
+```{r, eval=T, echo=F}
+summary_author=data.frame(table(federalist.centered$Author))
+summary_author=summary_author%>%
+  rename("Author"=Var1, "Frequency"=Freq)
+#summary_author
+
+summary_author=summary_author%>%
+  kbl(caption = "Summary of the 85 Papers by Author") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+summary_author
+```
+
+Next, all the function words that are included in this dataset has been summarized in the following table. There are 70 function words in this dataset, which refers to the common words people use without much deliberation. Those function words reflects the unique writing habits and styles of the author. which provide us with great insights into determining the authorship of the disputed papers. 
+
+```{r, echo=F}
+#matrix(ls(federalist.centered[,3:72]), byrow=T,7,10)
+kbl(matrix(ls(federalist.centered[,3:72]), byrow=T,7,10),caption="Table of Function Words in the Dataset")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+To see what values that each variables can take, here's the summary statistics of three function words (numeric variables) we randomly selected: `upon`, `and`, and `into`.
+
+```{r, echo=F}
+federalist.centered.matrix=as.matrix(federalist.centered[,c(41,22,69)])
+summary=summary(federalist.centered.matrix)
+
+sds=paste("Sds    : ",round(colSds(federalist.centered.matrix),3),"        ", sep="")
+
+alltogether=rbind(summary,sds)
+rownames(alltogether)=c("","","","","","","")
+#alltogether
+kbl(alltogether, caption="Statistics Summary of 3 Randomly Selected Variables")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+Here, we visualized the usage of the function words `upon`, `and`, and `into` in different papers. Though function words `than` and `into` do not provide any conclusive findings, function word `upon` clearly reveals the unique writing habit of James Madison. It's clear that Alexander Hamilton and John Jay all frequently use the function wor `upon` in their writings, James Madison seldom use the word `upon`. Interestingly, the frequency of `upon` in those disputed papers are also extremely low (close to 0). This unique pattern suggests that James Madison might be the likely author of the disputed paper. 
+
+
+```{r, eval=T, fig.width=10, fig.height=8, echo=F}
+plot1=ggplot(data=federalist.centered)+
+  geom_point(aes(x=Paper,y=than, col=Author))+
+  ggtitle("Centered and Normalized Frequency of 'than'")+
+  xlab("Paper")+
+  ylab("Frequency of 'than'")+
+  theme_minimal()
+plot2=ggplot(data=federalist.centered)+
+  geom_point(aes(x=Paper,y=upon, col=Author))+
+  ggtitle("Centered and Normalized Frequency of 'upon'")+
+  xlab("Paper")+
+  ylab("Frequency of 'upon'")+
+  theme_minimal()
+plot3=ggplot(data=federalist.centered)+
+  geom_point(aes(x=Paper,y=into, col=Author))+
+  ggtitle("Centered and Normalized Frequency of 'into'")+
+  xlab("Paper")+
+  ylab("Frequency of 'into'")+
+  theme_minimal()
+grid.arrange(plot1, plot2, plot3, ncol=2)
+```
+
+
+We also explored how different variables (function words) are correlated in the Federalist Paper dataset. From the following pair-wise scatter plot, it's clear that no obvious linear relationship is found between the pair `than` and `upon` and the pair `upon` and `into`. A weak linear relationship is observed in the pair After calculating the correlation of the three variables. We got the correlation of `than` and `upon` to be -0.0577, the correlation of `than` and `into` to be 0.2987, and the correlation of `into` and `upon` to be -0.1133, which allign with our observation from the pair-wise scatter plot.
+
+```{r, eval=T, echo=F, fig.width=10, fig.height=5}
+#cor(federalist.centered$than,federalist.centered$upon)
+#cor(federalist.centered$than,federalist.centered$into)
+#cor(federalist.centered$upon,federalist.centered$into)
+
+corr=federalist.centered[,c(41,22,69)]
+pairs(corr, main="Pairwise Scatter Plot of `than`, `upon`, and `into`")
+```
+
+Since `upon` seems to do a great job distinguishing James Madison's writing habit and style, we decided to compare the frequency of the word `upon` in Alexander Hamilton's writing and James Madison's writing to see how different their writing styles can be.
+
+```{r, eval=T, echo=F,fig.width=10, fig.height=5}
+federalist.t.test=federalist[,c(1,2,22)]
+federalist.t.test=  federalist.t.test[ which(federalist.t.test$Author=='AH'
+| federalist.t.test$Author == 'JM'), ]
+
+boxplot(federalist.t.test$upon~federalist.t.test$Author, xlab="Author",ylab="upon", main="Boxplot of variable `upon` across Alexander Hamilton and James Madison")
+
+
+#sd(federalist.t.test[which(federalist.t.test$Author=='AH'),]$upon)
+#sd(federalist.t.test[which(federalist.t.test$Author=='JM'),]$upon)
+```
+
+It's very clear from the side-by-side box plot that Alexander Hamilton had a much higher tendency to include the word `upon` in his writing than James Madison. In other words, `upon` is a great distinguishing function words that we can use to identify James Madison's work. To quantatatively compare the mean of the two groups, we decided to apply a two-sample t-test. Since the standard deviation of `upon` in Alexander Hamilton's work is 0.7377 and the standard deviation of `upon` in Alexander Hamilton's work is 0.1933, we decided to apply the Welch's t test.
+
+The null hypothesis for the test is that the means of `upon` are equal in Alexander Hamilton's and James Madison's writing.
+The alternate hypothesis for the test is that means are not equal.
+
+```{r, eval=F,echo=F}
+t.test(federalist.t.test[which(federalist.t.test$Author=='AH'),]$upon,federalist.t.test[which(federalist.t.test$Author=='JM'),]$upon, var.equal = FALSE)
+```
+
+```{r, eval=T, echo=F}
+headers=c("t","df","p-value")
+values=c('14.354','62.985','< 2.2e-16')
+test=data.frame(cbind(headers,values))
+test=rename(test,"Key Statistics"=headers, "Values"=values)
+kbl(test, caption = "Welch's Two Sample t-test")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+The p-value we got from this Welch two-sample t-test is less than 0.05, therefore, we rejected the cull hypothesis and concluded that the mean of `upon` is statisticaly different among Alexander Hamilton's and James Madison's writings.
+
+# Principal Components Analysis
+
+The dimension of the data is the same as the number of variables in the data set. We want to reduce it because a large number of dimensions complicates our work and adds unnecessary workload. We can reduce the dimension by performing a PCA analysis. PCA is esentially project the observed data into a different axis (PCs) so that the dimension can be reduced. In other words, PCA analysis finds the most important determinants in the dataset that can explain ,most of the variations of the data and help us get rid of the dispensable variables. We conduct PCA for all the numerical variables, and we have scaled the data to have unit variance before applying PCA, which fits to one of the PCA assumptions. Variables that have different scales might dominate, thus disrupts, the PCA.
+
+The first 5 PCs of the data are presented below:
+
+```{r, eval=T, echo=F}
+federalist.pca=federalist.centered[,3:72]
+
+#colnames(federalist.pca)
+
+#Run principal components analysis
+pcs = prcomp(federalist.pca)
+
+#Summarize the pcs
+#summary(pcs)
+
+Standard.Deviation=c(2.54076, 2.2278, 2.09955, 1.93672, 1.73304)
+Proportion.Explained=c(0.09222, 0.0709, 0.06297, 0.05358, 0.04291)
+Culmulative.Explained=c(0.09222, 0.1631, 0.22609, 0.27968, 0.32258)
+pcsumm=data.frame(rbind(Standard.Deviation,Proportion.Explained, Culmulative.Explained))
+pcsumm=pcsumm%>%
+  rename("PC1"=X1,"PC2"=X2,"PC3"=X3,"PC4"=X4,"PC5"=X5)%>%
+  kbl(caption = "First 5 PCs")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+pcsumm
+```
+
+Here is the visualization of our PCA analysis. Looking at the cumulative percentage of variance explained, we need 26 PC to explain at least 80% of the variation on the data. The PCA does a good job in reducing the dimensionality of the data by eliminating more than 50% of the original variables.
+
+```{r, eval=T, echo=F,fig.width=10, fig.height=5}
+
+pr.var = pcs$sdev^2
+pve <- pr.var / sum(pr.var)
+par(mfrow=c(1,2))
+plot(pve, xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     ylim = c(0, 0.1), type = "b", main="Proportion of Variance Explained for each PC")
+plot(cumsum(pve), xlab = "Principal Component",
+     ylab = "Cumulative Proportion of Variance Explained",
+     ylim = c(0, 1), type = "b", main="Cumulative Percentage of Variance Explained")
+#cumsum(pve)>0.8
+```
+
+To further our PCA analysis, we conducted pairwise PC plots. We didn't observe any obvious clusters with the first 3 PCs. It’s not helpful for separating the data. We continue to color the pairwise plots with the authorship. Some data points in the plot are still intermixed, but we can see more patterns of separation of the data. We can see that PC2 and PC3 and still mixed, not being helpful to separate the data. But there are some patterns in PC1 and PC2/3 that we can start to see some distinctions of the data. In general, the blue data points (Disputed)  overlaps with green points (James Madison), which shed light on the possible author for the disputed papers is James Madison.
+
+```{r, eval = T, echo=F, fig.width=10, fig.height=5}
+pairs(pcs$x[,1:3], main="Pairwise Plot of the First 3 PCs")
+```
+
+```{r, echo=F, fig.width=10, fig.height=5}
+set.seed(315)
+author=federalist.centered$Author
+pairs(pcs$x[,1:3], col=factor(author), main="Colored Pairwise Plot of the First 3 PCs by Author")
+
+```
+
+```{r, echo=F, fig.width=10, fig.height=3}
+set.seed(315)
+barplot(table(factor(author)), col = unique(factor(author)), main="Color Scale")
+```
+
+
+# K-means clustering
+
+Next, we applied K-mean clustering, one type of unsupervised machine learning techniques, to our Federalist Papers dataset to see if we can get more deterministic clusterings.
+
+K-means clustering means that we will group the observations into k groups (clusters) based on their characteristics and use these clusters to label unlabeled observations. A cluster is a group of observations that are similar to each other based on their observed characteristics. This is helpful to this data set because, if we can find some characteristics that sort the authors into distinct clusters, we can use this technique to determine the authors of the disputed papers.
+
+
+We start our cluster analysis by applying k-means clustering to the data. To apply k-means clustering, it is necessary to choose the number of clusters in which we want to separate the data. A good measurement of the performance of a particular choice of clusters is to find the total within cluster sum of squares. For each value $k$ between 1 and 10, find the total within cluster sum of squares of the $k$-means clustering. A plot is generated to visualizes the decay of the error as $k$ increases. There is signifcant dropoff in error from 3 to 4, so we will choose 4 clusters. These, intuitively, might represent the three known authors as well as the collaborative works.
+
+```{r, eval = T, echo=F, fig.width=10, fig.height=5}
+set.seed(315)
+withinss = rep(NA, 10)
+
+for(k in 1:10){
+	z = kmeans(federalist.centered[3:72],k,iter.max = 100)
+	withinss[k] = z$tot.withinss
+}
+
+plot(withinss,
+     xlab="K",
+     ylab="Total Within Cluster Sum of Squares",
+     main="Error vs. K",
+     )
+lines(withinss)
+
+```
+
+Here's the first 10 clustering result from the K-mean algorithm:
+```{r, eval = T, echo=F}
+set.seed(315)
+k = 4
+kmean = kmeans(federalist.centered[3:72], centers = k,  nstart=25)
+exhibit=cbind(federalist[,1:2],kmean$cluster)[1:10,]
+exhibit=rename(exhibit,"Cluster"='kmean$cluster')
+kbl(exhibit, caption="First 10 Results from K-means clustering")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r, eval=T, echo=F, fig.width=10, fig.height=5}
+fviz_cluster(kmean, data = federalist.centered[3:72], main="Visualization of the K-means Clusters", ggtheme=theme_minimal(),xlab=FALSE, ylab=FALSE,show.clust.cent=TRUE)
+```
+
+
+The K-means clustering that we applied returns 4 clusters of sizes 25, 8, 4, 48. It's clear that the clusters are imbalanced with one smaller set of only 4 papers and one huge set contains 48 papers.
+
+The average error for each cluster is then calculated by dividing the within cluster sum of squares error of each cluster by the number of observations of that cluster. The average error table is shown below. It's evident that the second and third clusters have similar level of error. The first cluster has a lower average error and the fourth cluster has a higher avereage error.
+
+```{r, eval = T, echo=F}
+
+average_error = rep(0,k)
+for(i in 1:k){
+  average_error[i] = kmean$withinss[i]/kmean$size[i]
+}
+#average_error
+
+name=c("cluster 1","cluster 2","cluster 3","cluster 4")
+#rbind(name,average_error)
+
+avg_err=data.frame(average_error)
+avg_err=cbind(name,avg_err)
+avg_err=rename(avg_err, "Cluster"=name, "Average Error"=average_error)
+kbl(avg_err, caption="Average Error for Different Clusters")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+To visualize how the clusters generated by k-means algorithm can be useful, we plotted the first 3 PCs against one another just like what we did for PCA, but color the point of each observation according to the cluster it belongs to. Note that the clusters, in order, are colored: Black, Red, Green, Blue. It's clear that clusters 1 and 3 are much larger. The PCs visually do a decent job in separating these apart.
+
+```{r, eval = T, echo=F, fig.width=10, fig.height=5}
+set.seed(315)
+pairs(pcs$x[,1:3], col = kmean$cluster, main="Colored Pairwise PC Plot by K-means Clustering Result")
+```
+
+
+```{r, echo=F, fig.width=10, fig.height=3}
+set.seed(315)
+barplot(table(kmean$cluster), col = c(rgb(0, 0, 0), rgb(1,0,0), rgb(0,1,0),rgb(0,0,1)), main="Color Scale")
+
+```
+
+A contigency table has been created to summarize the clusters in our K-mean analysis and determine which cluster correspond to which author:
+
+```{r, eval = T, echo=F}
+contingency=table(federalist.centered$Author,kmean$cluster)%>%
+  kbl(caption = "Contingency Table for K-Means and Obeserved Data") %>%
+  add_header_above(c(" ", "Cluster" = 4))%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+  
+contingency
+```
+
+Therefore, it's clear that cluster 1 corresponds to James Madison and Disputed; cluster 2 corresponds to Collaboration; cluster 3 corresponds to Alexander Hamilton; cluster 4 corresponds to John Jay. Because the Disputed papers are clearly clustered with the James Madison papers, we believe it is most likely that James Madison authored these papers.
+
+# Hierarchical clustering.
+
+Lastly, we applied hierarchical clustering, another unsupervised machine learning technique, to our dataset. The key operation in hierarchical agglomerative clustering is to repeatedly combine the two nearest clusters into a larger Both k-means and hierarchical clustering are unsupervised machine learning techniques. The main difference is that the k-means used a pre-specified  number of clusters, in which the method  assigns records to each cluster to  find the mutually exclusive cluster of spherical shape based on distance.	On the other hand, hierarchical method can get at any number of clusters base on different cutting points to interpret the dendrogram.
+
+To apply hierarchical clustering, we first removed the categorical variables from the data. Then, we applyed average-linkage hierarchical clustering using euclidean distance to the remaining numerical variables. 
+
+```{r, echo=F}
+dist_mat = dist(federalist.centered[3:72], method = 'euclidean')
+hclust_avg = hclust(dist_mat, method = 'average')
+#str(hclust_avg)
+```
+
+
+The following is the dendogram plot generated by the obtained hierarchical clustering output. Without knowing the anything about the dataset, we would conslude that there are 3 clusters in this dataset. One cluster on the left consists of 13, 1, 18. Another cluster on the right contains 3, 4, 5, 64. The rest of the observations have been grouped ina massive cluster in the middle. We do not want this because it's clear that there are four clusters in our dataset: AH, JM, JJ, and COL. We will stick with 4 clusters, as used in the k-means analysis.
+
+```{r, echo=F, fig.width=10, fig.height=4}
+plot(hclust_avg, xlab="Papers", ylab="Average Distance Between Clusters")
+```
+
+To visualize the separation between the chosen clusters, we added assigned different colors to visualize the size of the clusters. For the light blue cluster to the right, the average distance range is [6,14.5]. For the dark blue cluster adjacent to the light blue cluster, the average distance range is [14.5,15.3].For the second-left green cluster, the average distance range is [15.3,15.5]. And lastly, the red cluster to the left, the average distance range is [14.5,16]. 
+
+```{r, echo=F, fig.width=10, fig.height=4}
+cut_avg <- cutree(hclust_avg, k = 4)
+plot(hclust_avg,xlab="Papers", ylab="Average Distance Between Clusters", main="Colored Cluster Dendrogram")
+rect.hclust(hclust_avg, k = 4, border = 2:6)
+```
+
+The clusters assigned to the first few rows and columns of the dataset have been presented below. It's clear that increasing the clusters from 3 to 4 again just puts one paper in its own cluster, and keeps almost all of the data together. This is an early indication that we will not be able to draw conclusions from hierarchical clustering.  
+
+```{r, echo=F}
+federalist.hier = mutate(federalist.centered[,1:2], cluster = cut_avg)
+kbl(federalist.hier[1:10,], caption="First 10 Results from Hierarchical Clustering Result")%>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+Similar to what we did for k-means, we generate again the pairwise plots of PCA, now coloring the observations according to the clustering provided by the hierarchical clustering output. The clusters are extremely imbalanced. Most data are identified to be cluster 2. Cluster 1,3, and 4 have only 1 observations. This again illustrates that hierarchical is not a good method to use for this Federalist Paper dataset.
+
+```{r, echo=F, fig.width=10, fig.height=4}
+set.seed(315)
+pairs(pcs$x[,1:3], col = federalist.hier$cluster, main="Colored PC Plot by Hierarchical Clustering")
+```
+
+```{r, echo=F, fig.width=10, fig.height=3}
+set.seed(315)
+barplot(table(federalist.hier$cluster), col = unique(federalist.hier$cluster),main="Color Scale") 
+```
+
+To compare our findings in k-means and hierarchical clustering, another contingency table is generated to compare the output Though we used the same number of clusters for both methods, the resulting clusters are completely unrelated because the hierarchical clustering is so bad. The hierarchical clustering does not include any useful information.
+
+```{r, echo=F}
+#contingency2=table(federalist.hier$cluster, kmean$cluster)%>%
+  #kable(caption = "Contingency Table") %>%
+  #add_header_above(c("K-Mean Clustering" = 4))%>%
+  #kable_classic(full_width = F, html_font = "Cambria")
+#contingency2
+
+Hierarchical=federalist.hier$cluster
+K_Mean=kmean$cluster
+
+Hierarchical.1=c(0,	0,	1,	0)
+Hierarchical.2=c(25, 7, 47, 3)
+Hierarchical.3=c(0,	0,	0,	1)
+Hierarchical.4=c(0,	1,	0,	0)
+conting2=data.frame(rbind(Hierarchical.1,Hierarchical.2,Hierarchical.3,Hierarchical.4))
+conting2=conting2%>%
+  rename("K.Mean.1"=X1,"K.Mean.2"=X2,"K.Mean.3"=X3,"K.Mean.4"=X4)%>%
+  kbl(caption = "Contingency Table for K-means and Hierarchical Clustering") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+  
+conting2
+```
+
+# Conclusion
+
+Though the hierarchical clustering provides a differnt perspective on the authorship of the disputed papers, PCA and K-means clustering all grouped the disputed papers with James Madison's paper and allude to the fact that James Madison is the author of the 12 disputed federalist papers. A quick Google search returns that our conclusion allign with what historian Douglass Adair proposed in his paper “The Authorship of the Disputed Federalist Papers” published in 1944. 
+
+This type of analysis is extremely promising and powerful because it can help us enables us to identify the most likely author of articles, news or messages. It has great applications in real-life: authorship identification can be applied to tasks such as identifying anonymous author, detecting plagiarism or finding ghost writer. As more and more people posting and writing online anonymously, having the ability to identify the author of a piece of writing might gets more and more important. 
+
+
+# Appendix
+
+The code we used to answer the questions have been shown below: 
+
+Loading packages:
+
+```{r, eval=F}
+set.seed(315)
+library(kableExtra)
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(microbenchmark)
+library(matrixStats)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+```
+
+Q1:
+
+```{r, eval=F}
+federalist=read.delim("Federalist.txt",header = TRUE, sep = ",", dec = ".")
+federalist[1:5,1:6]
+```
+
+Q2:
+
+```{r, eval=F}
+str(federalist)
+```
+
+Q3:
+
+```{r, eval=F}
+federalist[,3:72]=federalist[,3:72]*100
+
+federalist[,3:72]= as.data.frame(scale(federalist[,3:72]))
+federalist.centered=data.frame(federalist)
+federalist.centered[1:5,1:6]
+```
+
+Q4:
+
+```{r, eval=F}
+summary_author=data.frame(table(federalist.centered$Author))
+summary_author=summary_author%>%
+  rename("Author"=Var1, "Frequency"=Freq)
+summary_author
+```
+
+```{r, eval=F}
+kable(matrix(ls(federalist.centered[,3:72]), byrow=T,7,10))
+```
+
+```{r, eval=F}
+federalist.centered.matrix=as.matrix(federalist.centered[,c(41,22,69)])
+summary=summary(federalist.centered.matrix)
+
+sds=paste("Sds    : ",round(colSds(federalist.centered.matrix),3),"        ", sep="")
+
+alltogether=rbind(summary,sds)
+rownames(alltogether)=c("","","","","","","")
+
+kable(alltogether)
+```
+
+Q5:
+
+```{r, eval=F}
+plot1=ggplot(data=federalist.centered)+
+  geom_point(aes(x=Paper,y=than, col=Author))+
+  ggtitle("Centered and Normalized Frequency of 'than'")+
+  xlab("Paper")+
+  ylab("Frequency of 'than'")+
+  theme_minimal()
+plot2=ggplot(data=federalist.centered)+
+  geom_point(aes(x=Paper,y=upon, col=Author))+
+  ggtitle("Centered and Normalized Frequency of 'upon'")+
+  xlab("Paper")+
+  ylab("Frequency of 'upon'")+
+  theme_minimal()
+plot3=ggplot(data=federalist.centered)+
+  geom_point(aes(x=Paper,y=into, col=Author))+
+  ggtitle("Centered and Normalized Frequency of 'into'")+
+  xlab("Paper")+
+  ylab("Frequency of 'into'")+
+  theme_minimal()
+grid.arrange(plot1, plot2, plot3, ncol=2)
+```
+
+Q6:
+
+```{r, eval=F}
+cor(federalist.centered$than,federalist.centered$upon)
+cor(federalist.centered$than,federalist.centered$into)
+cor(federalist.centered$upon,federalist.centered$into)
+
+corr=federalist.centered[,c(41,22,69)]
+pairs(corr)
+```
+
+Q7:
+
+```{r, eval=F}
+federalist.t.test=federalist[,c(1,2,22)]
+federalist.t.test=  federalist.t.test[ which(federalist.t.test$Author=='AH'
+| federalist.t.test$Author == 'JM'), ]
+
+boxplot(federalist.t.test$upon~federalist.t.test$Author, xlab="Author",ylab="upon")
+
+sd(federalist.t.test[which(federalist.t.test$Author=='AH'),]$upon)
+sd(federalist.t.test[which(federalist.t.test$Author=='JM'),]$upon)
+```
+
+Q8:
+
+```{r, eval=F}
+t.test(federalist.t.test[which(federalist.t.test$Author=='AH'),]$upon,federalist.t.test[which(federalist.t.test$Author=='JM'),]$upon, var.equal = FALSE)
+```
+
+
+Q10:
+
+```{r, eval=F}
+federalist.pca=federalist.centered[,3:72]
+
+colnames(federalist.pca)
+
+#Run principal components analysis
+pcs = prcomp(federalist.pca)
+
+#Summarize the pcs
+summary(pcs)
+```
+
+Q11:
+
+```{r, eval=F}
+pr.var = pcs$sdev^2
+pve <- pr.var / sum(pr.var)
+par(mfrow=c(1,2))
+plot(pve, xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     ylim = c(0, 0.1), type = "b", main="Proportion of Variance Explained for each PC")
+plot(cumsum(pve), xlab = "Principal Component",
+     ylab = "Cumulative Proportion of Variance Explained",
+     ylim = c(0, 1), type = "b", main="Cumulative Percentage of Variance Explained")
+cumsum(pve)>0.8
+```
+
+Q12:
+
+```{r, eval = F}
+pairs(pcs$x[,1:3])
+```
+
+Q13:
+
+```{r, eval=F}
+set.seed(315)
+author=federalist.centered$Author
+pairs(pcs$x[,1:3], col=factor(author))
+
+```
+
+```{r, eval=F}
+set.seed(315)
+barplot(table(factor(author)), col = unique(factor(author)))
+```
+
+Q15:
+
+```{r, eval = F}
+set.seed(315)
+withinss = rep(NA, 10)
+
+for(k in 1:10){
+	z = kmeans(federalist.centered[3:72],k,iter.max = 100)
+	withinss[k] = z$tot.withinss
+}
+
+plot(withinss,
+     xlab="K",
+     ylab="Total Within Cluster Sum of Squares",
+     main="Error vs. K",
+     )
+lines(withinss)
+```
+
+Q16:
+
+```{r, eval = F}
+set.seed(315)
+k = 4
+kmean = kmeans(federalist.centered[3:72], centers = k,  nstart=25)
+exhibit=cbind(federalist[,1:2],kmean$cluster)[1:10,]
+exhibit=rename(exhibit,"Cluster"='kmean$cluster')
+kable(exhibit)
+```
+
+```{r, eval=F}
+fviz_cluster(kmean, data = federalist.centered[3:72], main="Visualization of the CLusters", ggtheme=theme_minimal(),xlab=FALSE, ylab=FALSE,show.clust.cent=TRUE)
+```
+
+Q17:
+
+```{r, eval = F}
+
+average_error = rep(0,k)
+for(i in 1:k){
+  average_error[i] = kmean$withinss[i]/kmean$size[i]
+}
+
+name=c("cluster 1","cluster 2","cluster 3","cluster 4")
+
+avg_err=data.frame(average_error)
+avg_err=cbind(name,avg_err)
+avg_err=rename(avg_err, "Cluster"=name, "Average Error"=average_error)
+kable(avg_err)
+```
+
+Q18:
+
+```{r, eval = F}
+set.seed(315)
+pairs(pcs$x[,1:3], col = kmean$cluster)
+```
+
+```{r, eval=F}
+set.seed(315)
+barplot(table(kmean$cluster), col = c(rgb(0, 0, 0), rgb(1,0,0), rgb(0,1,0), rgb(0,0,1)))
+```
+
+Q19:
+
+```{r, eval = F}
+contingency=table(federalist.centered$Author,kmean$cluster)
+contingency
+```
+
+Q21:
+
+```{r, eval=F}
+dist_mat = dist(federalist.centered[3:72], method = 'euclidean')
+hclust_avg = hclust(dist_mat, method = 'average')
+str(hclust_avg)
+```
+
+Q22:
+
+```{r, eval=F}
+plot(hclust_avg, xlab="Papers", ylab="Average Distance Between Clusters")
+```
+
+Q23:
+
+```{r, eval=F}
+cut_avg <- cutree(hclust_avg, k = 4)
+plot(hclust_avg,xlab="Papers", ylab="Average Distance Between Clusters")
+rect.hclust(hclust_avg, k = 4, border = 2:6)
+
+federalist.hier = mutate(federalist.centered[,1:2], cluster = cut_avg)
+kable(federalist.hier[1:10,])
+```
+
+Q24:
+
+```{r, eval=F}
+set.seed(315)
+pairs(pcs$x[,1:4], col = federalist.hier$cluster)
+```
+
+```{r, eval=F}
+set.seed(315)
+barplot(table(federalist.hier$cluster), col = unique(federalist.hier$cluster)) 
+```
+
+Q25:
+
+```{r, eval=F}
+Hierarchical=federalist.hier$cluster
+K_Mean=kmean$cluster
+table(Hierarchical, K_Mean)
+```
